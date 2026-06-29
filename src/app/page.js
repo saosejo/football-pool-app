@@ -5,186 +5,174 @@ import { forceDirectAPISync } from '@/app/actions/adminSync';
 
 export default function Home() {
   const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
   const [authMode, setAuthMode] = useState('login'); 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Main UI Data State
-  const [pools, setPools] = useState([]);
+  // App Business States
+  const [myPools, setMyPools] = useState([]);
   const [activePool, setActivePool] = useState(null);
   const [matches, setMatches] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [predictions, setPredictions] = useState({});
 
-  // Admin Manual Setup States
+  // Group Creation/Join UI States
+  const [createTitle, setCreateTitle] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [exactPts, setExactPts] = useState(5);
   const [syncLoading, setSyncLoading] = useState(false);
-  const [calcLoading, setCalcLoading] = useState(false);
-  const [newPoolTitle, setNewPoolTitle] = useState('');
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
-      if (session?.user) fetchProfile(session.user.id);
+      if (session?.user) fetchUserPools(session.user.id);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      if (session?.user) fetchProfile(session.user.id);
-      else setProfile(null);
+      if (session?.user) fetchUserPools(session.user.id);
+      else setMyPools([]);
     });
-    fetchGlobalPools();
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchProfile = async (userId) => {
-    const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
-    setProfile(data);
+  // Fetches only the groups/parties the current user has explicitly joined
+  const fetchUserPools = async (userId) => {
+    const { data, error } = await supabase
+      .from('pool_participants')
+      .select('pools(*)')
+      .eq('user_id', userId);
+    
+    if (data) setMyPools(data.map(item => item.pools).filter(Boolean));
   };
 
   const handleEmailAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMessage('');
-    const redirectUrl = window.location.origin;
+    const { error } = authMode === 'signup' 
+      ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } })
+      : await supabase.auth.signInWithPassword({ email, password });
 
-    if (authMode === 'signup') {
-      const { error } = await supabase.auth.signUp({
-        email, password, options: { emailRedirectTo: redirectUrl }
-      });
-      if (error) setMessage(`❌ ${error.message}`);
-      else setMessage('✉️ Success! Check your email inbox to verify your account.');
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setMessage(`❌ ${error.message}`);
-    }
+    if (error) setMessage(`❌ ${error.message}`);
+    else if (authMode === 'signup') setMessage('✉️ Check your inbox to verify your email!');
     setLoading(false);
-  };
-
-  const handleGoogleLogin = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin }
-    });
-  };
-
-  const fetchGlobalPools = async () => {
-    const { data } = await supabase.from('pools').select('*');
-    setPools(data || []);
   };
 
   const selectPool = async (pool) => {
     setActivePool(pool);
-    const { data: mData } = await supabase.from('matches').select('*').order('utc_date', { ascending: true }).limit(25);
+    
+    // Fetch global match fixtures
+    const { data: mData } = await supabase.from('matches').select('*').order('utc_date', { ascending: true }).limit(20);
     setMatches(mData || []);
 
+    // Fetch group-isolated leaderboard
     const { data: lData } = await supabase
       .from('pool_participants')
       .select('total_points, profiles(username)')
       .eq('pool_id', pool.id)
       .order('total_points', { ascending: false });
     setLeaderboard(lData || []);
+
+    // Fetch user's existing predictions unique to THIS specific pool group
+    const { data: pData } = await supabase
+      .from('predictions')
+      .select('*')
+      .eq('pool_id', pool.id)
+      .eq('user_id', user.id);
+    
+    const predMap = {};
+    pData?.forEach(p => {
+      predMap[p.match_id] = { home: p.home_prediction, away: p.away_prediction };
+    });
+    setPredictions(predMap);
+  };
+
+  const createGroupPool = async (e) => {
+    e.preventDefault();
+    if (!createTitle) return;
+
+    // 1. Create the standalone pool group with custom point metrics
+    const { data: poolData, error: pErr } = await supabase.from('pools').insert({
+      title: createTitle,
+      created_by: user.id,
+      scope: 'tournament',
+      pts_exact_score: parseInt(exactPts),
+      pts_goal_diff: Math.ceil(exactPts / 2),
+      pts_outcome: Math.floor(exactPts / 2)
+    }).select().single();
+
+    if (pErr) return alert(pErr.message);
+
+    // 2. Automatically join the creator to their own group party
+    await supabase.from('pool_participants').insert({ pool_id: poolData.id, user_id: user.id });
+    
+    alert(`🎉 Group created! Share this Join Code with friends:\n${poolData.id}`);
+    setCreateTitle('');
+    fetchUserPools(user.id);
+  };
+
+  const joinGroupPool = async (e) => {
+    e.preventDefault();
+    if (!joinCode) return;
+
+    const { error } = await supabase.from('pool_participants').insert({
+      pool_id: joinCode.trim(),
+      user_id: user.id
+    });
+
+    if (error) alert('❌ Invalid Group Code or you are already in this group party.');
+    else {
+      alert('🚀 Successfully joined group party!');
+      setJoinCode('');
+      fetchUserPools(user.id);
+    }
   };
 
   const savePrediction = async (matchId) => {
     const pred = predictions[matchId];
-    if (!pred) return alert('Please enter scores before saving!');
-    
+    if (!pred?.home || !pred?.away) return alert('Enter scores first!');
+
     const { error } = await supabase.from('predictions').upsert({
-      pool_id: activePool.id, 
-      user_id: user.id, 
+      pool_id: activePool.id,
+      user_id: user.id,
       match_id: matchId,
-      home_prediction: parseInt(pred.home), 
+      home_prediction: parseInt(pred.home),
       away_prediction: parseInt(pred.away)
     });
 
-    if (error) alert(`Error saving prediction: ${error.message}`);
-    else alert('Prediction saved securely!');
+    if (error) alert(error.message);
+    else alert('Prediction locked for this group!');
   };
 
-  // --- MANUAL ADMIN FUNCTIONS ---
-  const triggerManualFixtureSync = async () => {
+  const triggerMasterFixtureSync = async () => {
     setSyncLoading(true);
-    try {
-      // Executes directly on the server without checking CRON_SECRET headers
-      const result = await forceDirectAPISync();
-
-      if (result.success) {
-        alert('🔄 Fixtures synced directly via Server Action!');
-        if (activePool) selectPool(activePool);
-      } else {
-        alert(`❌ Sync failed: ${result.error}`);
-      }
-    } catch (err) {
-      alert(`Network failure: ${err.message}`);
-    }
+    const res = await forceDirectAPISync();
+    alert(res.success ? '🔄 Master match fixtures updated across all pools!' : `❌ Error: ${res.error}`);
+    if (activePool) selectPool(activePool);
     setSyncLoading(false);
-  };
-
-  const triggerManualScoreCalculation = async () => {
-    setCalcLoading(true);
-    try {
-      const res = await fetch('/api/cron/calculate-scores', {
-        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET || 'your_cron_secret_here'}` }
-      });
-      const data = await res.json();
-      alert(data.success ? `📊 Processed ${data.processed} predictions!` : `❌ Failed: ${data.error}`);
-      if (activePool) selectPool(activePool);
-    } catch (err) {
-      alert(`Network error: ${err.message}`);
-    }
-    setCalcLoading(false);
-  };
-
-  const createManualPool = async (e) => {
-    e.preventDefault();
-    if (!newPoolTitle) return;
-    
-    const { data, error } = await supabase.from('pools').insert({
-      title: newPoolTitle,
-      created_by: user.id,
-      scope: 'tournament',
-      pts_exact_score: 5,
-      pts_goal_diff: 3,
-      pts_outcome: 2
-    }).select();
-
-    if (error) {
-      alert(`Error creating pool: ${error.message}`);
-    } else {
-      alert('🏆 New competition pool initialized!');
-      setNewPoolTitle('');
-      fetchGlobalPools();
-    }
   };
 
   if (!user) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 p-4">
-        <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-xl border border-gray-100 space-y-6">
+      <div className="flex min-h-screen items-center justify-center bg-slate-900 p-4">
+        <div className="w-full max-w-md bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700 space-y-6 text-white">
           <div className="text-center">
-            <h2 className="text-3xl font-extrabold text-gray-900">🏆 Arena Pools</h2>
-            <p className="text-sm text-gray-500 mt-1">Predict matches and climb the leaderboard standings</p>
+            <h2 className="text-3xl font-black tracking-tight">⚽ Party Pools</h2>
+            <p className="text-sm text-slate-400 mt-1">Create private prediction groups for you and your friends</p>
           </div>
-          <div className="flex border-b">
-            <button className={`flex-1 pb-2 font-bold ${authMode === 'login' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-400'}`} onClick={() => setAuthMode('login')}>Sign In</button>
-            <button className={`flex-1 pb-2 font-bold ${authMode === 'signup' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-400'}`} onClick={() => setAuthMode('signup')}>Sign Up</button>
+          <div className="flex border-b border-slate-700">
+            <button className={`flex-1 pb-2 font-bold ${authMode === 'login' ? 'border-b-2 border-blue-500 text-blue-500' : 'text-slate-500'}`} onClick={() => setAuthMode('login')}>Log In</button>
+            <button className={`flex-1 pb-2 font-bold ${authMode === 'signup' ? 'border-b-2 border-blue-500 text-blue-500' : 'text-slate-500'}`} onClick={() => setAuthMode('signup')}>Sign Up</button>
           </div>
-          <form onSubmit={handleEmailAuth} className="space-y-4">
-            <input type="email" required placeholder="Email" className="w-full p-3 border rounded-xl" value={email} onChange={e=>setEmail(e.target.value)}/>
-            <input type="password" required placeholder="Password" className="w-full p-3 border rounded-xl" value={password} onChange={e=>setPassword(e.target.value)}/>
-            <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold">{loading ? 'Processing...' : authMode === 'login' ? 'Log In' : 'Register'}</button>
+          <form onSubmit={handleEmailAuth} className="space-y-4 text-slate-900">
+            <input type="email" required placeholder="Email Address" className="w-full p-3 rounded-xl bg-slate-100" value={email} onChange={e=>setEmail(e.target.value)}/>
+            <input type="password" required placeholder="Password" className="w-full p-3 rounded-xl bg-slate-100" value={password} onChange={e=>setPassword(e.target.value)}/>
+            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-xl font-bold transition">{authMode === 'login' ? 'Enter Arena' : 'Register Account'}</button>
           </form>
-          {message && <div className="p-3 bg-blue-50 text-blue-700 rounded-xl text-xs text-center">{message}</div>}
-          <div className="text-center text-xs text-gray-400 font-bold uppercase">or</div>
-          <button type="button" onClick={handleGoogleLogin} className="w-full border p-3 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-gray-50 shadow-sm">
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="#EA4335" d="M12 5.04c1.67 0 3.17.58 4.35 1.71l3.25-3.25C17.63 1.63 14.97 1 12 1 7.37 1 3.4 3.67 1.4 7.56l3.87 3a7.16 7.16 0 0 1 6.73-5.52z"/>
-              <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.36H12v4.51h6.46a5.5 5.5 0 0 1-2.39 3.62l3.71 2.88c2.17-2 3.71-4.95 3.71-8.65z"/>
-              <path fill="#FBBC05" d="M5.27 14.22a7.15 7.15 0 0 1 0-4.44l-3.87-3A11.94 11.94 0 0 0 0 12c0 1.92.45 3.74 1.4 5.37l3.87-3.15z"/>
-              <path fill="#34A853" d="M12 23c3.24 0 5.97-1.08 7.96-2.91l-3.71-2.88c-1.03.69-2.35 1.11-4.25 1.11-3.14 0-5.8-2.12-6.75-4.99l-3.87 3A11.94 11.94 0 0 0 12 23z"/>
-            </svg>
+          {message && <div className="p-3 bg-slate-700 text-blue-400 rounded-xl text-xs text-center">{message}</div>}
+          <button type="button" onClick={() => supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })} className="w-full bg-white text-slate-900 p-3 rounded-xl font-bold flex items-center justify-center gap-2 transition hover:bg-slate-100">
             Continue with Gmail
           </button>
         </div>
@@ -193,92 +181,113 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm">
-        <h1 className="text-xl font-bold text-gray-950">🏆 MatchDay Leaderboard</h1>
-        <div className="flex items-center gap-4 text-sm">
-          <span className="text-gray-500 font-medium">{user.email} ({profile?.role || 'player'})</span>
-          <button onClick={() => supabase.auth.signOut()} className="text-red-500 font-bold hover:underline">Sign Out</button>
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
+      <header className="bg-slate-800 border-b border-slate-700 px-6 py-4 flex justify-between items-center shadow-md">
+        <h1 className="text-xl font-black tracking-tight flex items-center gap-2 text-blue-400">🏆 Private Groups Arena</h1>
+        <div className="flex items-center gap-4 text-xs">
+          <span className="bg-slate-700 text-slate-300 px-3 py-1.5 rounded-full font-semibold">{user.email}</span>
+          <button onClick={triggerMasterFixtureSync} disabled={syncLoading} className="text-amber-400 hover:underline">{syncLoading ? 'Syncing...' : '🔄 Update Global Scores'}</button>
+          <button onClick={() => supabase.auth.signOut()} className="text-red-400 font-bold hover:underline">Sign Out</button>
         </div>
       </header>
 
-      {/* --- MANUAL SETUP ADMIN CONTROL BAR --- */}
-      {/* Appears for admins, or toggle true during development setup */}
-      {(profile?.role === 'admin' || true) && (
-        <div className="bg-amber-50 border-b border-amber-200 p-4 px-6 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="text-amber-800 font-bold text-sm">🛠️ Admin Manual Setup Panel:</span>
-            <span className="text-xs text-amber-600 bg-amber-100 px-2 py-0.5 rounded">Bypass Cron limits</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <button onClick={triggerManualFixtureSync} disabled={syncLoading} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 transition">
-              {syncLoading ? 'Syncing...' : 'Force Sync Fixtures'}
-            </button>
-            <button onClick={triggerManualScoreCalculation} disabled={calcLoading} className="bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 transition">
-              {calcLoading ? 'Calculating...' : 'Force Recalc Scores'}
-            </button>
-            <form onSubmit={createManualPool} className="flex items-center gap-2 border-l border-amber-300 pl-3">
-              <input type="text" required placeholder="New Pool Title..." className="p-1 text-xs border rounded bg-white w-40" value={newPoolTitle} onChange={e=>setNewPoolTitle(e.target.value)}/>
-              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition">Create Pool</button>
+      <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* LEFT COLUMN: GROUP MANIPULATION PORTS */}
+        <div className="space-y-6">
+          {/* Create Group Party */}
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-3">
+            <h3 className="font-extrabold text-xs uppercase tracking-wider text-blue-400">Create New Party Group</h3>
+            <form onSubmit={createGroupPool} className="space-y-2">
+              <input type="text" required placeholder="Group Name (e.g. World Cup Office)" className="w-full p-2 text-sm rounded bg-slate-900 border border-slate-700 text-white" value={createTitle} onChange={e=>setCreateTitle(e.target.value)}/>
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold block uppercase mb-1">Exact Score Reward Points</label>
+                <input type="number" min="1" max="50" className="w-full p-2 text-sm rounded bg-slate-900 border border-slate-700 text-white" value={exactPts} onChange={e=>setExactPts(e.target.value)}/>
+              </div>
+              <button type="submit" className="w-full bg-blue-600 text-xs font-bold p-2 rounded hover:bg-blue-700 transition text-white">Initialize Group</button>
             </form>
           </div>
-        </div>
-      )}
 
-      <main className="flex-1 p-6 grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white p-4 rounded-xl shadow-sm border h-fit space-y-2">
-          <h3 className="font-bold text-xs uppercase tracking-wider text-gray-400 mb-2">Active Competitions</h3>
-          {pools.map(p => (
-            <button key={p.id} onClick={() => selectPool(p)} className={`w-full text-left p-3 rounded-xl transition font-medium text-sm ${activePool?.id === p.id ? 'bg-blue-50 text-blue-600' : 'hover:bg-gray-50 text-gray-700'}`}>
-              🏁 {p.title}
-            </button>
-          ))}
-          {pools.length === 0 && (
-            <p className="text-xs text-gray-400 italic">No pools found. Use the admin panel above to create your first pool!</p>
-          )}
+          {/* Join Existing Group Party */}
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-3">
+            <h3 className="font-extrabold text-xs uppercase tracking-wider text-purple-400">Join Friend's Group Party</h3>
+            <form onSubmit={joinGroupPool} className="flex gap-2">
+              <input type="text" required placeholder="Paste Group ID Code..." className="flex-1 p-2 text-sm rounded bg-slate-900 border border-slate-700 text-white" value={joinCode} onChange={e=>setJoinCode(e.target.value)}/>
+              <button type="submit" className="bg-purple-600 text-xs font-bold px-4 rounded hover:bg-purple-700 transition text-white">Join</button>
+            </form>
+          </div>
+
+          {/* User's Current Parties Navigation */}
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-2">
+            <h3 className="font-extrabold text-xs uppercase tracking-wider text-slate-400">My Active Party Circles</h3>
+            {myPools.map(p => (
+              <button key={p.id} onClick={() => selectPool(p)} className={`w-full text-left p-3 rounded-lg transition font-medium text-sm flex justify-between items-center ${activePool?.id === p.id ? 'bg-blue-600 text-white shadow' : 'bg-slate-900 text-slate-300 hover:bg-slate-700'}`}>
+                <span>👥 {p.title}</span>
+                <span className="text-[10px] bg-black/30 px-1.5 py-0.5 rounded text-slate-400">Rules: {p.pts_exact_score}pts</span>
+              </button>
+            ))}
+          </div>
         </div>
 
+        {/* COMPONENT VIEWS LAYER */}
         {activePool ? (
           <>
-            <div className="md:col-span-2 space-y-4">
-              <h3 className="font-bold text-lg text-gray-800">{activePool.title} - Schedules</h3>
-              {matches.map(match => {
-                const isLocked = new Date(match.utc_date) <= new Date();
-                return (
-                  <div key={match.id} className="p-4 bg-white rounded-xl border flex items-center justify-between gap-2 shadow-sm">
-                    <span className="text-xs font-semibold text-gray-700 w-1/3 text-right truncate">{match.home_team}</span>
-                    <div className="flex items-center gap-1 bg-gray-50 p-1.5 rounded-lg border">
-                      <input type="number" disabled={isLocked} className="w-10 p-1 text-center bg-white border rounded" onChange={e => setPredictions({...predictions, [match.id]: {...predictions[match.id], home: e.target.value}})}/>
-                      <span className="text-xs text-gray-400 font-bold mx-1">:</span>
-                      <input type="number" disabled={isLocked} className="w-10 p-1 text-center bg-white border rounded" onChange={e => setPredictions({...predictions, [match.id]: {...predictions[match.id], away: e.target.value}})}/>
+            {/* CENTRAL WORKSPACE: MATCH FIXTURES LIST */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <h2 className="text-xl font-black">{activePool.title}</h2>
+                <p className="text-xs text-slate-400 mt-1 select-all cursor-pointer">Group Invite Code ID: <span className="text-blue-400 font-mono font-bold">{activePool.id}</span></p>
+              </div>
+
+              <div className="space-y-3">
+                {matches.map(match => {
+                  const isLocked = new Date(match.utc_date) <= new Date();
+                  const currentPred = predictions[match.id] || { home: '', away: '' };
+
+                  return (
+                    <div key={match.id} className="p-4 bg-slate-800 rounded-xl border border-slate-700 flex items-center justify-between gap-4 shadow-md">
+                      <div className="w-1/3 text-right truncate">
+                        <span className="text-xs font-bold block">{match.home_team}</span>
+                        {match.home_score !== null && <span className="text-xs text-slate-400">Actual: {match.home_score}</span>}
+                      </div>
+
+                      <div className="flex items-center gap-1 bg-slate-900 p-2 rounded-lg border border-slate-700">
+                        <input type="number" min="0" disabled={isLocked} placeholder="-" className="w-10 p-1 text-center bg-slate-800 text-white border border-slate-600 rounded disabled:opacity-50" value={currentPred.home} onChange={e => setPredictions({...predictions, [match.id]: {...currentPred, home: e.target.value}})}/>
+                        <span className="text-xs text-slate-500 font-bold mx-1">:</span>
+                        <input type="number" min="0" disabled={isLocked} placeholder="-" className="w-10 p-1 text-center bg-slate-800 text-white border border-slate-600 rounded disabled:opacity-50" value={currentPred.away} onChange={e => setPredictions({...predictions, [match.id]: {...currentPred, away: e.target.value}})}/>
+                      </div>
+
+                      <div className="w-1/3 text-left truncate">
+                        <span className="text-xs font-bold block">{match.away_team}</span>
+                        {match.away_score !== null && <span className="text-xs text-slate-400">Actual: {match.away_score}</span>}
+                      </div>
+
+                      <button onClick={() => savePrediction(match.id)} disabled={isLocked} className="bg-blue-600 text-white text-xs px-4 py-2 rounded-lg font-bold hover:bg-blue-700 transition disabled:bg-slate-700 disabled:text-slate-500">
+                        {isLocked ? 'Locked' : 'Save'}
+                      </button>
                     </div>
-                    <span className="text-xs font-semibold text-gray-700 w-1/3 text-left truncate">{match.away_team}</span>
-                    <button onClick={() => savePrediction(match.id)} disabled={isLocked} className="bg-blue-600 text-white text-xs px-4 py-2 rounded-lg font-bold disabled:bg-gray-200 disabled:text-gray-400">{isLocked ? 'Locked' : 'Save'}</button>
-                  </div>
-                );
-              })}
-              {matches.length === 0 && (
-                <p className="text-sm text-gray-500 italic p-4 bg-white rounded-xl border text-center">No matches synced yet. Click "Force Sync Fixtures" above to fetch tournament data.</p>
-              )}
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="bg-white p-4 rounded-xl shadow-sm border h-fit">
-              <h3 className="font-bold text-gray-800 text-xs uppercase tracking-wider mb-3">Live Standings</h3>
-              <div className="divide-y">
+            {/* RIGHT WORKSPACE: GROUP STANDINGS */}
+            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 h-fit space-y-4">
+              <h3 className="font-extrabold text-sm uppercase tracking-wider text-emerald-400 border-b border-slate-700 pb-2">Group Circle Standings</h3>
+              <div className="divide-y divide-slate-700">
                 {leaderboard.map((row, index) => (
-                  <div key={index} className="flex justify-between py-3 text-sm font-medium">
-                    <span className="text-gray-700">{index + 1}. {row.profiles?.username || 'Unknown User'}</span>
-                    <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md text-xs font-bold">{row.total_points} PTS</span>
+                  <div key={index} className="flex justify-between py-3 text-sm items-center">
+                    <span className="text-slate-300 font-medium">{index + 1}. {row.profiles?.username || 'Challenger'}</span>
+                    <span className="text-emerald-400 bg-emerald-950 border border-emerald-800 px-3 py-1 rounded-md text-xs font-black">{row.total_points} PTS</span>
                   </div>
                 ))}
               </div>
-              {leaderboard.length === 0 && (
-                <p className="text-xs text-gray-400 italic text-center py-4">No participants have scored points in this pool yet.</p>
-              )}
             </div>
           </>
         ) : (
-          <div className="md:col-span-3 flex items-center justify-center text-gray-400 p-12 bg-white rounded-xl border border-dashed">Select an active tournament from the sidebar panel to show predictions.</div>
+          <div className="lg:col-span-3 flex flex-col items-center justify-center text-slate-500 p-16 bg-slate-800 rounded-2xl border border-dashed border-slate-700">
+            <span className="text-5xl mb-4">👥</span>
+            <p className="text-sm font-bold">Select an active friend party circle or create a brand new one to check prediction schedules!</p>
+          </div>
         )}
       </main>
     </div>
