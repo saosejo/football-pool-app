@@ -92,7 +92,7 @@ export default function PartySetupPage() {
 
     setFormSubmitting(true);
     try {
-      // 1. Determine which match IDs need to be tied to this pool
+      // 1. Accumulate selected match target IDs
       const finalMatchIds = scopeMode === 'all' 
         ? wizardMatches.map(m => m.id) 
         : selectedMatchIds;
@@ -103,14 +103,15 @@ export default function PartySetupPage() {
         return;
       }
 
-      // 2. Insert metadata into the 'pools' table matching your exact column names
-      // Uses 'title' instead of 'name', and sets default dynamic betting scoring rules.
+      // 2. Insert metadata into the 'pools' table
+      // We pass the string value for your custom enum and populate match_scope
       const { data: newPool, error: poolError } = await supabaseClient
         .from('pools')
         .insert([{
           title: partyName,
           competition_id: selectedCompId,
-          scope: 'public', // Matches user-defined enum expectation safely
+          scope: 'public', // Set to lowercase 'public'. If your enum uses another keyword, match it here.
+          match_scope: scopeMode, // Saves 'all' or 'custom' into your match_scope VARCHAR column
           pts_exact_score: 3,
           pts_goal_diff: 2,
           pts_outcome: 1,
@@ -119,10 +120,15 @@ export default function PartySetupPage() {
         .select('id')
         .single();
 
-      if (poolError) throw poolError;
+      if (poolError) {
+        // Detailed error debugging log
+        console.error("Supabase Pools Insert Error Details:", poolError);
+        throw new Error(`[Pool Creation Failed]: ${poolError.message}. Hint: ${poolError.hint || 'None'}`);
+      }
+      
       if (!newPool?.id) throw new Error('Failed to capture the returned pool structural ID identifier.');
 
-      // 3. Map values and insert connections securely into the 'pool_matches' junction table
+      // 3. Map connections to your junction table
       const junctionRows = finalMatchIds.map(matchId => ({
         pool_id: newPool.id,
         match_id: matchId
@@ -132,14 +138,17 @@ export default function PartySetupPage() {
         .from('pool_matches')
         .insert(junctionRows);
 
-      if (junctionError) throw junctionError;
+      if (junctionError) {
+        console.error("Supabase Junction Insert Error Details:", junctionError);
+        throw new Error(`[Match Mapping Failed]: ${junctionError.message}`);
+      }
 
-      alert('🎉 Prediction Party and matching match scopes created successfully!');
+      alert('🎉 Prediction Party created successfully!');
       setPartyName('');
       setSelectedMatchIds([]);
     } catch (err) {
       console.error(err);
-      alert(`❌ Sync Failure: ${err.message || 'Failed to save architectural configurations.'}`);
+      alert(err.message || '❌ Failed to save structural configurations.');
     } finally {
       setFormSubmitting(false);
     }
