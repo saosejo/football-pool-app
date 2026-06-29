@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { forceDirectAPISync } from '@/app/actions/adminSync';
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -106,15 +107,17 @@ export default function Home() {
   const triggerManualFixtureSync = async () => {
     setSyncLoading(true);
     try {
-      // Pings your serverless api route directly from frontend
-      const res = await fetch('/api/cron/sync-fixtures', {
-        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET || 'your_cron_secret_here'}` }
-      });
-      const data = await res.json();
-      alert(data.success ? '🔄 Fixtures synced successfully!' : `❌ Failed: ${data.error}`);
-      if (activePool) selectPool(activePool);
+      // Executes directly on the server without checking CRON_SECRET headers
+      const result = await forceDirectAPISync();
+
+      if (result.success) {
+        alert('🔄 Fixtures synced directly via Server Action!');
+        if (activePool) selectPool(activePool);
+      } else {
+        alert(`❌ Sync failed: ${result.error}`);
+      }
     } catch (err) {
-      alert(`Network error: ${err.message}`);
+      alert(`Network failure: ${err.message}`);
     }
     setSyncLoading(false);
   };
