@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 
 export default function Home() {
   const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [authMode, setAuthMode] = useState('login'); 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,22 +18,35 @@ export default function Home() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [predictions, setPredictions] = useState({});
 
+  // Admin Manual Setup States
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [calcLoading, setCalcLoading] = useState(false);
+  const [newPoolTitle, setNewPoolTitle] = useState('');
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
+      if (session?.user) fetchProfile(session.user.id);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      if (session?.user) fetchProfile(session.user.id);
+      else setProfile(null);
     });
     fetchGlobalPools();
     return () => subscription.unsubscribe();
   }, []);
 
+  const fetchProfile = async (userId) => {
+    const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
+    setProfile(data);
+  };
+
   const handleEmailAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMessage('');
-    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : process.env.NEXT_PUBLIC_SITE_URL;
+    const redirectUrl = window.location.origin;
 
     if (authMode === 'signup') {
       const { error } = await supabase.auth.signUp({
@@ -61,7 +75,7 @@ export default function Home() {
 
   const selectPool = async (pool) => {
     setActivePool(pool);
-    const { data: mData } = await supabase.from('matches').select('*').limit(15);
+    const { data: mData } = await supabase.from('matches').select('*').order('utc_date', { ascending: true }).limit(25);
     setMatches(mData || []);
 
     const { data: lData } = await supabase
@@ -74,12 +88,72 @@ export default function Home() {
 
   const savePrediction = async (matchId) => {
     const pred = predictions[matchId];
-    if (!pred) return;
-    await supabase.from('predictions').upsert({
-      pool_id: activePool.id, user_id: user.id, match_id: matchId,
-      home_prediction: parseInt(pred.home), away_prediction: parseInt(pred.away)
+    if (!pred) return alert('Please enter scores before saving!');
+    
+    const { error } = await supabase.from('predictions').upsert({
+      pool_id: activePool.id, 
+      user_id: user.id, 
+      match_id: matchId,
+      home_prediction: parseInt(pred.home), 
+      away_prediction: parseInt(pred.away)
     });
-    alert('Prediction saved securely!');
+
+    if (error) alert(`Error saving prediction: ${error.message}`);
+    else alert('Prediction saved securely!');
+  };
+
+  // --- MANUAL ADMIN FUNCTIONS ---
+  const triggerManualFixtureSync = async () => {
+    setSyncLoading(true);
+    try {
+      // Pings your serverless api route directly from frontend
+      const res = await fetch('/api/cron/sync-fixtures', {
+        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET || 'your_cron_secret_here'}` }
+      });
+      const data = await res.json();
+      alert(data.success ? '🔄 Fixtures synced successfully!' : `❌ Failed: ${data.error}`);
+      if (activePool) selectPool(activePool);
+    } catch (err) {
+      alert(`Network error: ${err.message}`);
+    }
+    setSyncLoading(false);
+  };
+
+  const triggerManualScoreCalculation = async () => {
+    setCalcLoading(true);
+    try {
+      const res = await fetch('/api/cron/calculate-scores', {
+        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET || 'your_cron_secret_here'}` }
+      });
+      const data = await res.json();
+      alert(data.success ? `📊 Processed ${data.processed} predictions!` : `❌ Failed: ${data.error}`);
+      if (activePool) selectPool(activePool);
+    } catch (err) {
+      alert(`Network error: ${err.message}`);
+    }
+    setCalcLoading(false);
+  };
+
+  const createManualPool = async (e) => {
+    e.preventDefault();
+    if (!newPoolTitle) return;
+    
+    const { data, error } = await supabase.from('pools').insert({
+      title: newPoolTitle,
+      created_by: user.id,
+      scope: 'tournament',
+      pts_exact_score: 5,
+      pts_goal_diff: 3,
+      pts_outcome: 2
+    }).select();
+
+    if (error) {
+      alert(`Error creating pool: ${error.message}`);
+    } else {
+      alert('🏆 New competition pool initialized!');
+      setNewPoolTitle('');
+      fetchGlobalPools();
+    }
   };
 
   if (!user) {
@@ -120,10 +194,33 @@ export default function Home() {
       <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm">
         <h1 className="text-xl font-bold text-gray-950">🏆 MatchDay Leaderboard</h1>
         <div className="flex items-center gap-4 text-sm">
-          <span className="text-gray-500 font-medium">{user.email}</span>
+          <span className="text-gray-500 font-medium">{user.email} ({profile?.role || 'player'})</span>
           <button onClick={() => supabase.auth.signOut()} className="text-red-500 font-bold hover:underline">Sign Out</button>
         </div>
       </header>
+
+      {/* --- MANUAL SETUP ADMIN CONTROL BAR --- */}
+      {/* Appears for admins, or toggle true during development setup */}
+      {(profile?.role === 'admin' || true) && (
+        <div className="bg-amber-50 border-b border-amber-200 p-4 px-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-amber-800 font-bold text-sm">🛠️ Admin Manual Setup Panel:</span>
+            <span className="text-xs text-amber-600 bg-amber-100 px-2 py-0.5 rounded">Bypass Cron limits</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={triggerManualFixtureSync} disabled={syncLoading} className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 transition">
+              {syncLoading ? 'Syncing...' : 'Force Sync Fixtures'}
+            </button>
+            <button onClick={triggerManualScoreCalculation} disabled={calcLoading} className="bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 transition">
+              {calcLoading ? 'Calculating...' : 'Force Recalc Scores'}
+            </button>
+            <form onSubmit={createManualPool} className="flex items-center gap-2 border-l border-amber-300 pl-3">
+              <input type="text" required placeholder="New Pool Title..." className="p-1 text-xs border rounded bg-white w-40" value={newPoolTitle} onChange={e=>setNewPoolTitle(e.target.value)}/>
+              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition">Create Pool</button>
+            </form>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 p-6 grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white p-4 rounded-xl shadow-sm border h-fit space-y-2">
@@ -133,12 +230,15 @@ export default function Home() {
               🏁 {p.title}
             </button>
           ))}
+          {pools.length === 0 && (
+            <p className="text-xs text-gray-400 italic">No pools found. Use the admin panel above to create your first pool!</p>
+          )}
         </div>
 
         {activePool ? (
           <>
             <div className="md:col-span-2 space-y-4">
-              <h3 className="font-bold text-lg text-gray-800">Match Schedules</h3>
+              <h3 className="font-bold text-lg text-gray-800">{activePool.title} - Schedules</h3>
               {matches.map(match => {
                 const isLocked = new Date(match.utc_date) <= new Date();
                 return (
@@ -154,6 +254,9 @@ export default function Home() {
                   </div>
                 );
               })}
+              {matches.length === 0 && (
+                <p className="text-sm text-gray-500 italic p-4 bg-white rounded-xl border text-center">No matches synced yet. Click "Force Sync Fixtures" above to fetch tournament data.</p>
+              )}
             </div>
 
             <div className="bg-white p-4 rounded-xl shadow-sm border h-fit">
@@ -161,11 +264,14 @@ export default function Home() {
               <div className="divide-y">
                 {leaderboard.map((row, index) => (
                   <div key={index} className="flex justify-between py-3 text-sm font-medium">
-                    <span className="text-gray-700">{index + 1}. {row.profiles?.username}</span>
+                    <span className="text-gray-700">{index + 1}. {row.profiles?.username || 'Unknown User'}</span>
                     <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md text-xs font-bold">{row.total_points} PTS</span>
                   </div>
                 ))}
               </div>
+              {leaderboard.length === 0 && (
+                <p className="text-xs text-gray-400 italic text-center py-4">No participants have scored points in this pool yet.</p>
+              )}
             </div>
           </>
         ) : (
