@@ -1,9 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase'; // Adjust this path if your client is in a different folder
-// Import your server action that hits the Football-Data API
-import { forceDirectAPISync } from '@/app/actions'; 
+import { createClient } from '@supabase/supabase-js';
+// Corrected precise file path target to clear the Turbopack build error
+import { forceDirectAPISync } from '@/app/actions/adminSync'; 
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
 const AVAILABLE_COMPETITIONS = [
   { id: 2021, name: 'English Premier League' },
@@ -15,21 +19,20 @@ const AVAILABLE_COMPETITIONS = [
 ];
 
 export default function PartySetupPage() {
-  // Main form states
   const [selectedCompId, setSelectedCompId] = useState(AVAILABLE_COMPETITIONS[0].id);
-  const [scopeMode, setScopeMode] = useState('all'); // 'all' = Whole League, 'custom' = Custom Set
+  const [scopeMode, setScopeMode] = useState('all'); 
   const [partyName, setPartyName] = useState('');
 
-  // Match loading & tracking states
   const [wizardMatches, setWizardMatches] = useState([]);
   const [selectedMatchIds, setSelectedMatchIds] = useState([]);
   const [syncLoading, setSyncLoading] = useState(false);
   const [formSubmitting, setFormSubmitting] = useState(false);
 
-  // Load matches from database whenever the tournament selection changes
   useEffect(() => {
     async function fetchLocalMatches() {
-      const { data, error } = await supabase
+      if (!supabaseClient) return;
+
+      const { data, error } = await supabaseClient
         .from('matches')
         .select('*')
         .eq('competition_id', selectedCompId)
@@ -40,13 +43,11 @@ export default function PartySetupPage() {
       } else {
         setWizardMatches([]);
       }
-      // Reset selections when shifting to a brand new league context
       setSelectedMatchIds([]);
     }
     fetchLocalMatches();
   }, [selectedCompId]);
 
-  // Handle checking/unchecking custom matches
   const toggleWizardMatch = (matchId) => {
     setSelectedMatchIds(prev =>
       prev.includes(matchId)
@@ -55,16 +56,17 @@ export default function PartySetupPage() {
     );
   };
 
-  // Manual Trigger to hit the API, save rows, and instantly reload the UI state
   const handleLoadTournamentMatches = async () => {
+    if (!supabaseClient) {
+      alert('Supabase environment variables are missing configuration.');
+      return;
+    }
     setSyncLoading(true);
     try {
-      // 1. Fire server action to fetch live data from Football-Data API into DB
       const res = await forceDirectAPISync(selectedCompId);
       
       if (res && res.success) {
-        // 2. Immediately pull down those newly ingested matches from your Supabase table
-        const { data } = await supabase
+        const { data } = await supabaseClient
           .from('matches')
           .select('*')
           .eq('competition_id', selectedCompId)
@@ -83,14 +85,13 @@ export default function PartySetupPage() {
     }
   };
 
-  // Submission Pipeline
   const handleCreateParty = async (e) => {
     e.preventDefault();
     if (!partyName.trim()) return alert('Please enter a party name');
+    if (!supabaseClient) return;
 
     setFormSubmitting(true);
     try {
-      // Determine final scope array based on chosen button rule
       const finalMatches = scopeMode === 'all' 
         ? wizardMatches.map(m => m.id) 
         : selectedMatchIds;
@@ -101,20 +102,18 @@ export default function PartySetupPage() {
         return;
       }
 
-      const { data, error } = await supabase
+      const { error } = await supabaseClient
         .from('parties')
         .insert([{
           name: partyName,
           competition_id: selectedCompId,
           match_ids: finalMatches,
           created_at: new Date().toISOString()
-        }])
-        .select();
+        }]);
 
       if (error) throw error;
 
       alert('🎉 Prediction Party created successfully!');
-      // Reset form variables
       setPartyName('');
       setSelectedMatchIds([]);
     } catch (err) {
@@ -136,7 +135,6 @@ export default function PartySetupPage() {
 
         <form onSubmit={handleCreateParty} className="space-y-4">
           
-          {/* Party Name input */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Party / Group Name</label>
             <input 
@@ -149,7 +147,6 @@ export default function PartySetupPage() {
             />
           </div>
 
-          {/* Tournament Selection + Ingestion Button */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Target Tournament</label>
             <div className="flex gap-2">
@@ -174,7 +171,6 @@ export default function PartySetupPage() {
             </div>
           </div>
 
-          {/* Scope selection rule setup */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Match Scope Rules</label>
             <div className="flex gap-2">
@@ -195,14 +191,13 @@ export default function PartySetupPage() {
             </div>
           </div>
 
-          {/* Collapsible checklist container */}
           {scopeMode === 'custom' && (
             <div className="border border-slate-800 rounded p-2 bg-slate-950 space-y-2">
               <label className="text-[9px] text-slate-400 font-bold block uppercase border-b border-slate-800 pb-1">
                 Select Active Matches ({selectedMatchIds.length})
               </label>
               
-              <div className="max-h-44 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+              <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
                 {wizardMatches.map(m => (
                   <label key={m.id} className="flex items-center gap-2 p-1.5 hover:bg-slate-900 rounded cursor-pointer text-[11px] transition">
                     <input 
@@ -227,7 +222,6 @@ export default function PartySetupPage() {
             </div>
           )}
 
-          {/* Form Action submission button */}
           <button
             type="submit"
             disabled={formSubmitting || syncLoading}
