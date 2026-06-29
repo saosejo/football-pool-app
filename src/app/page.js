@@ -32,7 +32,7 @@ export default function Home() {
     e.preventDefault();
     setLoading(true);
     setMessage('');
-    const redirectUrl = window.location.origin;
+    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : process.env.NEXT_PUBLIC_SITE_URL;
 
     if (authMode === 'signup') {
       const { error } = await supabase.auth.signUp({
