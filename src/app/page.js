@@ -15,7 +15,8 @@ const AVAILABLE_COMPETITIONS = [
   { id: 2019, name: 'Serie A (Italy)' },
   { id: 2002, name: 'Bundesliga (Germany)' },
   { id: 2015, name: 'Ligue 1 (France)' },
-  { id: 2001, name: 'UEFA Champions League' }
+  { id: 2001, name: 'UEFA Champions League' },
+  { id: 2000, name: 'FIFA World Cup' }
 ];
 
 export default function PartySetupPage() {
