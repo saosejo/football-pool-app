@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-// Corrected precise file path target to clear the Turbopack build error
 import { forceDirectAPISync } from '@/app/actions/adminSync'; 
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -93,33 +92,54 @@ export default function PartySetupPage() {
 
     setFormSubmitting(true);
     try {
-      const finalMatches = scopeMode === 'all' 
+      // 1. Determine which match IDs need to be tied to this pool
+      const finalMatchIds = scopeMode === 'all' 
         ? wizardMatches.map(m => m.id) 
         : selectedMatchIds;
 
-      if (finalMatches.length === 0) {
+      if (finalMatchIds.length === 0) {
         alert('Cannot create a prediction pool with 0 active matches. Load fixtures first!');
         setFormSubmitting(false);
         return;
       }
 
-      const { error } = await supabaseClient
+      // 2. Insert metadata into the 'pools' table matching your exact column names
+      // Uses 'title' instead of 'name', and sets default dynamic betting scoring rules.
+      const { data: newPool, error: poolError } = await supabaseClient
         .from('pools')
         .insert([{
-          name: partyName,
+          title: partyName,
           competition_id: selectedCompId,
-          match_ids: finalMatches,
+          scope: 'PUBLIC', // Matches user-defined enum expectation safely
+          pts_exact_score: 3,
+          pts_goal_diff: 2,
+          pts_outcome: 1,
           created_at: new Date().toISOString()
-        }]);
+        }])
+        .select('id')
+        .single();
 
-      if (error) throw error;
+      if (poolError) throw poolError;
+      if (!newPool?.id) throw new Error('Failed to capture the returned pool structural ID identifier.');
 
-      alert('🎉 Prediction Party created successfully!');
+      // 3. Map values and insert connections securely into the 'pool_matches' junction table
+      const junctionRows = finalMatchIds.map(matchId => ({
+        pool_id: newPool.id,
+        match_id: matchId
+      }));
+
+      const { error: junctionError } = await supabaseClient
+        .from('pool_matches')
+        .insert(junctionRows);
+
+      if (junctionError) throw junctionError;
+
+      alert('🎉 Prediction Party and matching match scopes created successfully!');
       setPartyName('');
       setSelectedMatchIds([]);
     } catch (err) {
       console.error(err);
-      alert('❌ Failed to save structural configurations.');
+      alert(`❌ Sync Failure: ${err.message || 'Failed to save architectural configurations.'}`);
     } finally {
       setFormSubmitting(false);
     }
