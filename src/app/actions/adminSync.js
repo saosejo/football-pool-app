@@ -13,7 +13,10 @@ const LEAGUES = ['PL', 'CL', 'WC'];
 export async function forceDirectAPISync() {
   try {
     for (const code of LEAGUES) {
-      const apiRes = await fetch(`https://api.football-data.org/v4/competitions/${code}/matches`, {
+      const url = code === 'WC' 
+        ? `https://api.football-data.org/v4/competitions/${code}/matches?season=2026`
+        : `https://api.football-data.org/v4/competitions/${code}/matches`;
+      const apiRes = await fetch(url, {
         headers: { 'X-Auth-Token': process.env.FOOTBALL_DATA_API_KEY },
         next: { revalidate: 0 }
       });
