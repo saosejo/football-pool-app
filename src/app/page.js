@@ -110,7 +110,7 @@ export default function PartySetupPage() {
         .insert([{
           title: partyName,
           competition_id: selectedCompId,
-          scope: 'PUBLIC', // Matches user-defined enum expectation safely
+          scope: 'public', // Matches user-defined enum expectation safely
           pts_exact_score: 3,
           pts_goal_diff: 2,
           pts_outcome: 1,
