@@ -104,7 +104,7 @@ export default function PartySetupPage() {
       }
 
       const { error } = await supabaseClient
-        .from('parties')
+        .from('pools')
         .insert([{
           name: partyName,
           competition_id: selectedCompId,
