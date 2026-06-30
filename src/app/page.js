@@ -92,7 +92,15 @@ export default function PartySetupPage() {
 
     setFormSubmitting(true);
     try {
-      // 1. Accumulate selected match target IDs
+      // 1. Check for authenticated user to satisfy the DB structural constraints
+      const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
+      if (authError || !user) {
+        alert('❌ Auth Error: You must be logged in to create a prediction pool.');
+        setFormSubmitting(false);
+        return;
+      }
+
+      // 2. Accumulate selected match target IDs
       const finalMatchIds = scopeMode === 'all' 
         ? wizardMatches.map(m => m.id) 
         : selectedMatchIds;
@@ -103,15 +111,15 @@ export default function PartySetupPage() {
         return;
       }
 
-      // 2. Insert metadata into the 'pools' table
-      // We pass the string value for your custom enum and populate match_scope
+      // 3. Insert metadata including the crucial user ID relation
       const { data: newPool, error: poolError } = await supabaseClient
         .from('pools')
         .insert([{
           title: partyName,
           competition_id: selectedCompId,
-          scope: 'public', // Set to lowercase 'public'. If your enum uses another keyword, match it here.
-          match_scope: scopeMode, // Saves 'all' or 'custom' into your match_scope VARCHAR column
+          scope: 'public', // Set to your custom enum string
+          match_scope: scopeMode,
+          created_by: user.id, // 👈 THE MISSING LINK: Satisfies foreign key mapping
           pts_exact_score: 3,
           pts_goal_diff: 2,
           pts_outcome: 1,
@@ -121,14 +129,13 @@ export default function PartySetupPage() {
         .single();
 
       if (poolError) {
-        // Detailed error debugging log
         console.error("Supabase Pools Insert Error Details:", poolError);
-        throw new Error(`[Pool Creation Failed]: ${poolError.message}. Hint: ${poolError.hint || 'None'}`);
+        throw new Error(`[Pool Creation Failed]: ${poolError.message}`);
       }
       
       if (!newPool?.id) throw new Error('Failed to capture the returned pool structural ID identifier.');
 
-      // 3. Map connections to your junction table
+      // 4. Map connections to your junction table
       const junctionRows = finalMatchIds.map(matchId => ({
         pool_id: newPool.id,
         match_id: matchId
