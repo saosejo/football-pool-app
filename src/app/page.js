@@ -117,7 +117,7 @@ export default function PartySetupPage() {
         .insert([{
           title: partyName,
           competition_id: selectedCompId,
-          scope: 'public', // Set to your custom enum string
+          scope: 'tournament', // Set to your custom enum string
           match_scope: scopeMode,
           created_by: user.id, // 👈 THE MISSING LINK: Satisfies foreign key mapping
           pts_exact_score: 3,
