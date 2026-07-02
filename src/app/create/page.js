@@ -8,20 +8,16 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
-const AVAILABLE_COMPETITIONS = [
-  { id: 2021, name: 'English Premier League' },
-  { id: 2014, name: 'La Liga (Spain)' },
-  { id: 2019, name: 'Serie A (Italy)' },
-  { id: 2002, name: 'Bundesliga (Germany)' },
-  { id: 2015, name: 'Ligue 1 (France)' },
-  { id: 2001, name: 'UEFA Champions League' },
-  { id: 2000, name: 'FIFA World Cup' }
-];
 
 export default function PartySetupPage() {
-  const [selectedCompId, setSelectedCompId] = useState(AVAILABLE_COMPETITIONS[0].id);
-  const [scopeMode, setScopeMode] = useState('all'); 
+  const [competitions, setCompetitions] = useState([]);
+  const [selectedCompId, setSelectedCompId] = useState(null);
+  const [scopeMode,setScopeMode]=useState("season");
   const [partyName, setPartyName] = useState('');
+  const [availableSeasons, setAvailableSeasons] = useState([]);
+  const [selectedSeason, setSelectedSeason] = useState(null);
+  const [selectedStage,setSelectedStage]=useState("");
+  const [stages,setStages]=useState([]);
 
   const [wizardMatches, setWizardMatches] = useState([]);
   const [selectedMatchIds, setSelectedMatchIds] = useState([]);
@@ -40,6 +36,15 @@ export default function PartySetupPage() {
 
       if (!error && data) {
         setWizardMatches(data);
+        const uniqueStages = [
+          ...new Set(
+            data
+              .map(match => match.stage)
+              .filter(Boolean)
+          )
+        ];
+
+        setStages(uniqueStages);
       } else {
         setWizardMatches([]);
       }
@@ -47,6 +52,26 @@ export default function PartySetupPage() {
     }
     fetchLocalMatches();
   }, [selectedCompId]);
+
+  useEffect(() => {
+    async function loadCompetitions() {
+      if (!supabaseClient) return;
+
+      const { data, error } = await supabaseClient
+        .from("competitions")
+        .select("*")
+        .order("name");
+
+      if (!error && data) {
+        setCompetitions(data);
+
+        if (data.length > 0)
+          setSelectedCompId(data[0].id);
+      }
+    }
+
+    loadCompetitions();
+  }, []);
 
   const toggleWizardMatch = (matchId) => {
     setSelectedMatchIds(prev =>
@@ -63,7 +88,10 @@ export default function PartySetupPage() {
     }
     setSyncLoading(true);
     try {
-      const res = await forceDirectAPISync(selectedCompId);
+      const res = await forceDirectAPISync(
+        selectedCompId,
+        selectedSeason
+      )
       
       if (res && res.success) {
         const { data } = await supabaseClient
@@ -101,9 +129,25 @@ export default function PartySetupPage() {
       }
 
       // 2. Accumulate selected match target IDs
-      const finalMatchIds = scopeMode === 'all' 
-        ? wizardMatches.map(m => m.id) 
-        : selectedMatchIds;
+      let finalMatchIds = [];
+
+      if (scopeMode === "season") {
+
+          finalMatchIds = wizardMatches.map(m => m.id);
+
+      }
+      else if (scopeMode === "stage") {
+
+          finalMatchIds = wizardMatches
+              .filter(m => m.stage === selectedStage)
+              .map(m => m.id);
+
+      }
+      else {
+
+          finalMatchIds = selectedMatchIds;
+
+      }
 
       if (finalMatchIds.length === 0) {
         alert('Cannot create a prediction pool with 0 active matches. Load fixtures first!');
@@ -161,6 +205,64 @@ export default function PartySetupPage() {
     }
   };
 
+  function getMatchLabel(match){
+
+      if(match.home_team && match.away_team){
+
+          return `${match.home_team} vs ${match.away_team}`;
+
+      }
+
+      return [
+          match.stage,
+          match.matchday
+              ? `Matchday ${match.matchday}`
+              : null,
+          new Date(match.utc_date).toLocaleDateString()
+      ]
+      .filter(Boolean)
+      .join(" • ");
+
+  }
+
+  const groupedMatches = wizardMatches.reduce((groups, match) => {
+
+      const stage = match.stage || "Other";
+
+      if (!groups[stage])
+          groups[stage] = [];
+
+      groups[stage].push(match);
+
+      return groups;
+
+  }, {});
+  
+  async function loadSeasons(competitionId) {
+
+    const res = await fetch(
+        `/api/competitions/${competitionId}/seasons`
+    );
+
+    const json = await res.json();
+
+    const today = new Date();
+
+    const valid = json.seasons.filter(season => {
+
+        const start = new Date(season.startDate);
+        const end = new Date(season.endDate);
+
+        return start >= today || (today >= start && today <= end);
+
+    });
+
+    setAvailableSeasons(valid);
+
+    if(valid.length)
+        setSelectedSeason(valid[0].year);
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6 flex flex-col items-center justify-center">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl space-y-5">
@@ -192,10 +294,32 @@ export default function PartySetupPage() {
                 onChange={e => setSelectedCompId(parseInt(e.target.value))}
                 className="flex-1 p-2 rounded bg-slate-950 border border-slate-800 text-white text-xs focus:outline-none focus:border-blue-500 transition" 
               >
-                {AVAILABLE_COMPETITIONS.map(c => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
+                {competitions.map(c => (
+                  <option
+                      key={c.id}
+                      value={c.id}
+                  >
+                      {c.name}
+                  </option>
                 ))}
               </select>
+              {/* <select
+                value={selectedSeason ?? ""}
+                onChange={(e)=>setSelectedSeason(Number(e.target.value))}
+              >
+
+                {availableSeasons.map(season=>(
+
+                  <option
+                    key={season.year}
+                    value={season.year}
+                  >
+                    {season.year}
+                  </option>
+
+                ))}
+
+              </select> */}
 
               <button
                 type="button"
@@ -213,22 +337,29 @@ export default function PartySetupPage() {
             <div className="flex gap-2">
               <button 
                 type="button" 
-                onClick={() => setScopeMode('all')}
-                className={`flex-1 p-2 rounded border text-xs font-bold transition ${scopeMode === 'all' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'}`} 
+                onClick={() => setScopeMode('season')}
+                className={`flex-1 p-2 rounded border text-xs font-bold transition ${scopeMode === 'season' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'}`} 
               >
-                Whole League
+                season
               </button>
+              {/* <button 
+                type="button" 
+                onClick={() => setScopeMode('stage')}
+                className={`flex-1 p-2 rounded border text-xs font-bold transition ${scopeMode === 'stage' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'}`} 
+              >
+                stage
+              </button> */}
               <button 
                 type="button" 
-                onClick={() => setScopeMode('custom')}
-                className={`flex-1 p-2 rounded border text-xs font-bold transition ${scopeMode === 'custom' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'}`} 
+                onClick={() => setScopeMode('matches')}
+                className={`flex-1 p-2 rounded border text-xs font-bold transition ${scopeMode === 'matches' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'}`} 
               >
-                Custom Set
+                matches
               </button>
             </div>
           </div>
 
-          {scopeMode === 'custom' && (
+          {scopeMode === 'matches' && (
             <div className="border border-slate-800 rounded p-2 bg-slate-950 space-y-2">
               <label className="text-[9px] text-slate-400 font-bold block uppercase border-b border-slate-800 pb-1">
                 Select Active Matches ({selectedMatchIds.length})
@@ -244,7 +375,7 @@ export default function PartySetupPage() {
                       className="rounded border-slate-700 bg-slate-800 text-purple-600 focus:ring-0 focus:ring-offset-0"
                     />
                     <span className="truncate flex-1 text-slate-300">
-                      {m.home_team} <span className="text-slate-500 text-[9px]">vs</span> {m.away_team}
+                      {getMatchLabel(m)}
                     </span>
                   </label>
                 ))}
@@ -257,6 +388,26 @@ export default function PartySetupPage() {
                 )}
               </div>
             </div>
+          )}
+
+          {scopeMode === 'stage' && (
+            <select
+                value={selectedStage}
+                onChange={(e)=>setSelectedStage(e.target.value)}
+            >
+
+                {stages.map(stage=>(
+
+                    <option
+                        key={stage}
+                        value={stage}
+                    >
+                        {stage}
+                    </option>
+
+                ))}
+
+            </select>
           )}
 
           <button

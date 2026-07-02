@@ -19,6 +19,77 @@ export default function DashboardPage() {
   const [joinCode, setJoinCode] = useState('');
   const [joining, setJoining] = useState(false);
 
+  const fetchLeagues = async () => {
+    const apiRes = await fetch(`https://api.football-data.org/v4/competitions/`, {
+      headers: { 'X-Auth-Token': process.env.FOOTBALL_DATA_API_KEY },
+      next: { revalidate: 0 }
+    });
+    if (!apiRes.ok) return;
+    const data = await apiRes.json();
+    console.log(JSON.stringify(data));
+  }
+
+  const fetchMatches = async () => {
+    if (!supabaseClient) return;
+    setLoading(true);
+
+    const { data: { user } } = await supabaseClient.auth.getUser();
+    
+    if (!user) {
+      router.push('/auth');
+      return; 
+    }
+    setCurrentUser(user);
+
+    try {
+      // 1. Fetch pools the user created
+      const { data: data, error: createdError } = await supabaseClient
+        .from('competitions')
+        .select('*');
+
+      if (createdError) throw createdError;
+      console.log('data api key'+process.env.FOOTBALL_DATA_API_KEY)
+      console.log(JSON.stringify(data));
+
+      for(const league of data){
+        const code = league.code;
+        console.log(league);
+        const apiRes = await fetch(`/api/matches/${code}`);
+        console.log(apiRes)
+        if(apiRes.status !== 200) continue;
+        const data = await apiRes.json();
+        if(!data) continue;
+        console.log(JSON.stringify(data));
+
+        const mapped = data.matches.map(m => ({
+          id: m.id,
+          competition_id: data.competition.id,
+          utc_date: m.utcDate,
+          status: m.status,
+          matchday: m.matchday,
+          stage: m.stage,
+          home_team: m.homeTeam.name,
+          away_team: m.awayTeam.name,
+          home_score: m.score.fullTime.home ?? null,
+          away_score: m.score.fullTime.away ?? null,
+          winner: m.score.winner ?? null
+        }));
+
+
+        console.log(JSON.stringify(mapped))
+        await supabaseClient.from('matches').upsert(mapped);
+      }
+     
+    } catch (err) {
+      console.error("Error fetching matches:", err);
+    } finally {
+      setLoading(false);
+    }
+
+   
+
+  }
+
   const fetchMyPools = async () => {
     if (!supabaseClient) return;
     setLoading(true);
@@ -78,6 +149,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchMyPools();
+    fetchLeagues();
+    fetchMatches();
   }, [router]);
 
   const handleLogout = async () => {
